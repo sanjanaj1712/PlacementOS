@@ -337,6 +337,44 @@ def validation_error(errors):
     }), 400
 
 
+def reconcile_progress(values):
+    """Keep progress status and percentage consistent with each other.
+
+    not_started is 0%, completed is 100% and in_progress is anything in
+    between. When only one of the two is given the other is derived.
+    Returns an error message, or None.
+    """
+    status = values.get("status")
+    percentage = values.get("progress_percentage")
+
+    if percentage is not None and status is None:
+        if percentage == 0:
+            values["status"] = "not_started"
+        elif percentage == 100:
+            values["status"] = "completed"
+        else:
+            values["status"] = "in_progress"
+        return None
+
+    if status is not None and percentage is None:
+        if status == "in_progress":
+            return "progress_percentage is required for in_progress"
+
+        values["progress_percentage"] = 100 if status == "completed" else 0
+        return None
+
+    if status == "not_started" and percentage != 0:
+        return "not_started progress must be 0%"
+
+    if status == "completed" and percentage != 100:
+        return "completed progress must be 100%"
+
+    if status == "in_progress" and not 0 < percentage < 100:
+        return "in_progress progress must be between 1% and 99%"
+
+    return None
+
+
 PROFILE_FIELDS = {
     "full_name": field(text(100)),
     "education_level": field(text(100)),
@@ -821,9 +859,16 @@ def create_progress():
     if errors:
         return validation_error(errors)
 
+    mismatch = reconcile_progress(values)
+
+    if mismatch:
+        return validation_error({"status": mismatch})
+
     try:
         with psycopg.connect(DATABASE_URL) as connection:
             with connection.cursor() as cursor:
+                # One row per user and topic: marking a topic again updates
+                # the existing record instead of failing on a duplicate.
                 cursor.execute(
                     """
                     INSERT INTO user_topic_progress
@@ -833,24 +878,36 @@ def create_progress():
                         status,
                         progress_percentage
                     )
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id;
+                    SELECT %s, pt.id, %s, %s
+                    FROM path_topics pt
+                    WHERE pt.id = %s
+                    ON CONFLICT (user_id, path_topic_id)
+                    DO UPDATE SET
+                        status = EXCLUDED.status,
+                        progress_percentage = EXCLUDED.progress_percentage,
+                        updated_at = NOW()
+                    RETURNING id, (xmax = 0) AS created;
                     """,
                     (
                         user.id,
-                        values["path_topic_id"],
                         values["status"],
-                        values["progress_percentage"]
+                        values["progress_percentage"],
+                        values["path_topic_id"]
                     )
                 )
 
-                progress_id = cursor.fetchone()[0]
+                row = cursor.fetchone()
                 connection.commit()
 
+        if row is None:
+            return not_found("Topic")
+
+        progress_id, created = row
+
         return jsonify({
-            "status": "progress created",
+            "status": "progress created" if created else "progress updated",
             "id": str(progress_id)
-        }), 201
+        }), 201 if created else 200
 
     except Exception as e:
         return server_error(e)
@@ -920,6 +977,11 @@ def update_progress(progress_id):
         return jsonify({
             "error": "No fields provided for update"
         }), 400
+
+    mismatch = reconcile_progress(updates)
+
+    if mismatch:
+        return validation_error({"status": mismatch})
 
     set_clause = ", ".join(
         f"{field} = %s"
