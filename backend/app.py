@@ -1,7 +1,10 @@
+from collections import namedtuple
 from flask import Flask, jsonify, request
 from dotenv import load_dotenv
 from flask_cors import CORS
 import os
+import uuid
+import jwt
 import psycopg
 from supabase import create_client
 
@@ -36,9 +39,60 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+# Supabase signs access tokens either with the legacy shared secret (HS256)
+# or with asymmetric signing keys published at the project's JWKS endpoint.
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET") or None
+SUPABASE_JWT_ISSUER = f"{SUPABASE_URL.rstrip('/')}/auth/v1"
+SUPABASE_JWT_AUDIENCE = "authenticated"
+ASYMMETRIC_JWT_ALGORITHMS = ["ES256", "RS256"]
+
+jwks_client = jwt.PyJWKClient(
+    f"{SUPABASE_JWT_ISSUER}/.well-known/jwks.json",
+    cache_keys=True,
+    lifespan=600
+)
+
+AuthUser = namedtuple("AuthUser", ["id", "email"])
+
+
 # ---------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------
+
+def verify_access_token(token):
+    """Verify a Supabase access token locally and return its claims."""
+    try:
+        algorithm = jwt.get_unverified_header(token).get("alg")
+
+        if algorithm == "HS256" and SUPABASE_JWT_SECRET:
+            key = SUPABASE_JWT_SECRET
+        elif algorithm in ASYMMETRIC_JWT_ALGORITHMS:
+            key = jwks_client.get_signing_key_from_jwt(token).key
+        else:
+            return None
+
+        claims = jwt.decode(
+            token,
+            key,
+            algorithms=[algorithm],
+            audience=SUPABASE_JWT_AUDIENCE,
+            issuer=SUPABASE_JWT_ISSUER,
+            options={"require": ["exp", "sub", "aud", "iss"]}
+        )
+    except (jwt.InvalidTokenError, jwt.PyJWKClientError) as e:
+        app.logger.info("Rejected access token: %s", e)
+        return None
+
+    if claims.get("role") != "authenticated":
+        return None
+
+    try:
+        uuid.UUID(claims["sub"])
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+    return claims
+
 
 def get_current_user():
     """Validate the Supabase access token and return the user."""
@@ -52,12 +106,12 @@ def get_current_user():
     if not token:
         return None
 
-    try:
-        response = supabase.auth.get_user(token)
-        return response.user
-    except Exception as e:
-        print("SUPABASE AUTH ERROR:", e)
+    claims = verify_access_token(token)
+
+    if not claims:
         return None
+
+    return AuthUser(id=claims["sub"], email=claims.get("email"))
 
 
 
@@ -492,6 +546,11 @@ def update_profile():
 
 @app.route("/learning-paths", methods=["GET"])
 def learning_paths():
+    user, error_response, status_code = require_user()
+
+    if error_response:
+        return error_response, status_code
+
     try:
         with psycopg.connect(DATABASE_URL) as connection:
             with connection.cursor() as cursor:
