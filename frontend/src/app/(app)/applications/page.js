@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-const API_URL = "http://127.0.0.1:5000";
+import { API_URL, getAccessToken } from "@/lib/api";
 
 const statusOptions = [
   "saved",
@@ -35,7 +35,7 @@ export default function Applications() {
       setLoading(true);
       setError("");
 
-      const token = localStorage.getItem("access_token");
+      const token = await getAccessToken();
 
       const response = await fetch(`${API_URL}/applications`, {
         headers: {
@@ -69,7 +69,7 @@ export default function Applications() {
     try {
       setError("");
 
-      const token = localStorage.getItem("access_token");
+      const token = await getAccessToken();
 
       const response = await fetch(`${API_URL}/applications`, {
         method: "POST",
@@ -108,7 +108,7 @@ export default function Applications() {
     try {
       setError("");
 
-      const token = localStorage.getItem("access_token");
+      const token = await getAccessToken();
 
       const response = await fetch(
         `${API_URL}/applications/${id}`,

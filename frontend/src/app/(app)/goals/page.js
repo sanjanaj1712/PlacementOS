@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-const API_URL = "http://127.0.0.1:5000";
+import { API_URL, getAccessToken } from "@/lib/api";
 
 export default function Goals() {
   const [role, setRole] = useState("Software Engineer");
@@ -24,7 +24,7 @@ export default function Goals() {
 
   const loadGoal = async () => {
     try {
-      const token = localStorage.getItem("access_token");
+      const token = await getAccessToken();
 
       if (!token) {
         setMessage("Authentication required.");
@@ -77,7 +77,7 @@ export default function Goals() {
       setSaving(true);
       setMessage("");
 
-      const token = localStorage.getItem("access_token");
+      const token = await getAccessToken();
 
       if (!token) {
         setMessage("Authentication required.");

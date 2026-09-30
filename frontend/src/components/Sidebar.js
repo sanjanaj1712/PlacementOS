@@ -1,10 +1,17 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+
+  const logout = async () => {
+    await supabase.auth.signOut();
+    router.replace("/");
+  };
 
   const isActive = (path) => {
     if (path === "/dashboard") {
@@ -26,7 +33,7 @@ export default function Sidebar() {
     }`;
 
   return (
-    <aside className="min-h-screen w-64 shrink-0 border-r border-gray-200 bg-white p-6">
+    <aside className="flex min-h-screen w-64 shrink-0 flex-col border-r border-gray-200 bg-white p-6">
       {/* Logo */}
       <h1 className="text-xl font-bold tracking-tight text-gray-900">
         PlacementOS
@@ -63,6 +70,13 @@ export default function Sidebar() {
         >
           Profile
         </Link>
+
+        <button
+          onClick={logout}
+          className="mt-2 w-full rounded-lg px-4 py-3 text-left text-sm font-medium text-gray-600 transition hover:bg-gray-50 hover:text-gray-900"
+        >
+          Log out
+        </button>
       </div>
 
       {/* Footer */}

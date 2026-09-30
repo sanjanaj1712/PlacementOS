@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import TodaysFocus from "@/components/TodaysFocus";
 
-const API_URL = "http://127.0.0.1:5000";
+import { API_URL, getAccessToken } from "@/lib/api";
 
 export default function Dashboard() {
   const [applicationCount, setApplicationCount] = useState(0);
@@ -21,7 +21,7 @@ export default function Dashboard() {
 
   const loadApplicationCount = async () => {
     try {
-      const token = localStorage.getItem("access_token");
+      const token = await getAccessToken();
 
       if (!token) {
         return;
@@ -54,7 +54,7 @@ export default function Dashboard() {
 
   const loadGoal = async () => {
     try {
-      const token = localStorage.getItem("access_token");
+      const token = await getAccessToken();
 
       if (!token) {
         return;
@@ -86,7 +86,7 @@ export default function Dashboard() {
 
   const loadProgress = async () => {
   try {
-    const token = localStorage.getItem("access_token");
+    const token = await getAccessToken();
 
     if (!token) {
       return;

@@ -1,15 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 export default function Home() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [isSignup, setIsSignup] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+
+  // Already signed in: go straight to the dashboard.
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        router.replace("/dashboard");
+      }
+    });
+  }, [router]);
 
   const handleAuth = async () => {
     if (!email || !password) {
@@ -22,7 +33,7 @@ export default function Home() {
       setMessage("");
 
       if (isSignup) {
-        const { error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signUp({
           email,
           password,
         });
@@ -31,30 +42,27 @@ export default function Home() {
           throw error;
         }
 
+        // Projects without email confirmation sign the user in right away.
+        if (data.session) {
+          router.replace("/dashboard");
+          return;
+        }
+
         setMessage(
-          "Account created. Check your email if confirmation is required."
+          "Account created. Check your email to confirm it, then log in."
         );
       } else {
-        const { data, error } =
-          await supabase.auth.signInWithPassword({
-            email,
-            password,
-          });
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
 
         if (error) {
           throw error;
         }
 
-        const accessToken = data.session?.access_token;
-
-        if (accessToken) {
-          localStorage.setItem(
-            "access_token",
-            accessToken
-          );
-        }
-
-        window.location.href = "/dashboard";
+        // supabase-js keeps and refreshes the session itself.
+        router.replace("/dashboard");
       }
     } catch (error) {
       setMessage(error.message);
@@ -120,7 +128,7 @@ export default function Home() {
           >
             {isSignup
               ? "Already have an account? Login"
-              : "Don't have an account? Sign up"}
+              : "Don\u2019t have an account? Sign up"}
           </button>
         </div>
       </div>

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import TopicCard from "@/components/TopicCard";
 
-const API_URL = "http://127.0.0.1:5000";
+import { API_URL, getAccessToken } from "@/lib/api";
 
 export default function DSA() {
   const [topics, setTopics] = useState([]);
@@ -20,7 +20,7 @@ export default function DSA() {
       setLoading(true);
       setMessage("");
 
-      const token = localStorage.getItem("access_token");
+      const token = await getAccessToken();
 
       if (!token) {
         throw new Error("Authentication required.");
@@ -107,7 +107,7 @@ export default function DSA() {
     try {
       setMessage("");
 
-      const token = localStorage.getItem("access_token");
+      const token = await getAccessToken();
 
       if (!token) {
         throw new Error("Authentication required.");

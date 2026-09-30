@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-const API_URL = "http://127.0.0.1:5000";
+import { API_URL, getAccessToken } from "@/lib/api";
 
 const pathRoutes = {
   "Data Structures & Algorithms": "/learning/dsa",
@@ -25,7 +25,7 @@ export default function Learning() {
 
   const loadLearningData = async () => {
     try {
-      const token = localStorage.getItem("access_token");
+      const token = await getAccessToken();
 
       if (!token) {
         setError("Authentication required.");
