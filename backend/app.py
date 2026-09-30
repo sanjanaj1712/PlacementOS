@@ -1,5 +1,7 @@
 from collections import namedtuple
+from datetime import date, datetime
 from flask import Flask, jsonify, request
+from flask.json.provider import DefaultJSONProvider
 from dotenv import load_dotenv
 from flask_cors import CORS
 import os
@@ -9,7 +11,19 @@ import psycopg
 from supabase import create_client
 
 
+class JSONProvider(DefaultJSONProvider):
+    """Serialize dates as ISO 8601 so the frontend can parse them."""
+
+    @staticmethod
+    def default(value):
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+
+        return DefaultJSONProvider.default(value)
+
+
 app = Flask(__name__)
+app.json = JSONProvider(app)
 
 
 CORS(
@@ -137,6 +151,34 @@ def get_request_data():
     return data
 
 
+def server_error(error):
+    """Log an unexpected error and return a response without internals."""
+    if isinstance(error, psycopg.DataError):
+        return jsonify({
+            "error": "Invalid input"
+        }), 400
+
+    app.logger.exception("Unhandled error: %s", error)
+
+    return jsonify({
+        "error": "Internal server error"
+    }), 500
+
+
+def is_valid_uuid(value):
+    try:
+        uuid.UUID(str(value))
+        return True
+    except ValueError:
+        return False
+
+
+def not_found(resource):
+    return jsonify({
+        "error": f"{resource} not found"
+    }), 404
+
+
 def rows_to_dicts(cursor, rows):
     """Convert database rows to dictionaries."""
     columns = [description[0] for description in cursor.description]
@@ -205,8 +247,9 @@ def login():
         }), 200
 
     except Exception as e:
+        app.logger.info("Login failed: %s", e)
         return jsonify({
-            "error": str(e)
+            "error": "Invalid email or password"
         }), 401
 
 
@@ -252,7 +295,7 @@ def get_goals():
         return jsonify(goals), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/goals", methods=["POST"])
@@ -318,7 +361,7 @@ def create_goal():
         }), 201
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/goals/<goal_id>", methods=["PATCH"])
@@ -327,6 +370,9 @@ def update_goal(goal_id):
 
     if error_response:
         return error_response, status_code
+
+    if not is_valid_uuid(goal_id):
+        return not_found("Goal")
 
     data = get_request_data()
 
@@ -388,7 +434,7 @@ def update_goal(goal_id):
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/goals/<goal_id>", methods=["DELETE"])
@@ -397,6 +443,9 @@ def delete_goal(goal_id):
 
     if error_response:
         return error_response, status_code
+
+    if not is_valid_uuid(goal_id):
+        return not_found("Goal")
 
     try:
         with psycopg.connect(DATABASE_URL) as connection:
@@ -423,7 +472,7 @@ def delete_goal(goal_id):
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 # ---------------------------------------------------------
@@ -466,7 +515,7 @@ def profile():
         return jsonify(profile_data), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/profile", methods=["PATCH"])
@@ -537,7 +586,7 @@ def update_profile():
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 # ---------------------------------------------------------
@@ -567,7 +616,7 @@ def learning_paths():
         return jsonify(paths), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/learning-paths/<learning_path_id>/topics", methods=["GET"])
@@ -612,7 +661,7 @@ def get_path_topics(learning_path_id):
         return jsonify(topics), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 # ---------------------------------------------------------
@@ -698,7 +747,7 @@ def create_progress():
         }), 201
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/progress", methods=["GET"])
@@ -726,7 +775,7 @@ def get_progress():
         return jsonify(progress), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/progress/<progress_id>", methods=["PATCH"])
@@ -735,6 +784,9 @@ def update_progress(progress_id):
 
     if error_response:
         return error_response, status_code
+
+    if not is_valid_uuid(progress_id):
+        return not_found("Progress record")
 
     data = get_request_data()
 
@@ -815,7 +867,7 @@ def update_progress(progress_id):
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/progress/<progress_id>", methods=["DELETE"])
@@ -824,6 +876,9 @@ def delete_progress(progress_id):
 
     if error_response:
         return error_response, status_code
+
+    if not is_valid_uuid(progress_id):
+        return not_found("Progress record")
 
     try:
         with psycopg.connect(DATABASE_URL) as connection:
@@ -850,7 +905,7 @@ def delete_progress(progress_id):
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 # ---------------------------------------------------------
@@ -933,7 +988,7 @@ def create_application():
         }), 201
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/applications", methods=["GET"])
@@ -964,7 +1019,7 @@ def get_applications():
         return jsonify(applications), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/applications/<application_id>", methods=["PATCH"])
@@ -973,6 +1028,9 @@ def update_application(application_id):
 
     if error_response:
         return error_response, status_code
+
+    if not is_valid_uuid(application_id):
+        return not_found("Application")
 
     data = get_request_data()
 
@@ -1048,7 +1106,7 @@ def update_application(application_id):
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 @app.route("/applications/<application_id>", methods=["DELETE"])
@@ -1057,6 +1115,9 @@ def delete_application(application_id):
 
     if error_response:
         return error_response, status_code
+
+    if not is_valid_uuid(application_id):
+        return not_found("Application")
 
     try:
         with psycopg.connect(DATABASE_URL) as connection:
@@ -1083,7 +1144,7 @@ def delete_application(application_id):
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return server_error(e)
 
 
 # ---------------------------------------------------------
