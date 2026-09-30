@@ -1523,4 +1523,7 @@ def dashboard():
 if __name__ == "__main__":
     # Never enable debug mode outside local development: the Werkzeug
     # debugger allows arbitrary code execution.
-    app.run(debug=os.getenv("FLASK_DEBUG") == "1")
+    app.run(
+        port=int(os.getenv("PORT", "5000")),
+        debug=os.getenv("FLASK_DEBUG") == "1"
+    )
