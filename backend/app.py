@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from flask_cors import CORS
 import os
 import uuid
+from urllib.parse import urlparse
 import jwt
 import psycopg
 from supabase import create_client
@@ -201,6 +202,170 @@ ALLOWED_PROGRESS_STATUSES = [
 
 
 # ---------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------
+
+def text(max_length):
+    def validate(value):
+        if not isinstance(value, str):
+            raise ValueError("must be a string")
+
+        value = value.strip()
+
+        if len(value) > max_length:
+            raise ValueError(f"must be at most {max_length} characters")
+
+        return value
+
+    return validate
+
+
+def integer(minimum, maximum):
+    def validate(value):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("must be an integer")
+
+        if not minimum <= value <= maximum:
+            raise ValueError(f"must be between {minimum} and {maximum}")
+
+        return value
+
+    return validate
+
+
+def choice(options):
+    def validate(value):
+        if value not in options:
+            raise ValueError(f"must be one of: {', '.join(options)}")
+
+        return value
+
+    return validate
+
+
+def iso_date(value):
+    if not isinstance(value, str):
+        raise ValueError("must be a date in YYYY-MM-DD format")
+
+    try:
+        parsed = date.fromisoformat(value.strip())
+    except ValueError:
+        raise ValueError("must be a date in YYYY-MM-DD format")
+
+    if not 1950 <= parsed.year <= 2100:
+        raise ValueError("must be between 1950 and 2100")
+
+    return parsed.isoformat()
+
+
+def http_url(value):
+    value = text(2000)(value)
+    parsed = urlparse(value)
+
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("must be an http or https URL")
+
+    return value
+
+
+def text_list(max_items, max_length):
+    def validate(value):
+        if not isinstance(value, list):
+            raise ValueError("must be a list of strings")
+
+        items = [text(max_length)(item) for item in value]
+        items = [item for item in items if item]
+
+        if len(items) > max_items:
+            raise ValueError(f"must have at most {max_items} items")
+
+        return items
+
+    return validate
+
+
+def field(validator, required=False, empty=None):
+    return {
+        "validator": validator,
+        "required": required,
+        "empty": empty
+    }
+
+
+def validate_fields(data, specs, partial=False):
+    """Validate request fields against specs.
+
+    Returns (values, errors). Missing fields are skipped when partial is
+    True (PATCH). Empty strings and null clear optional fields but are
+    rejected for required ones.
+    """
+    values = {}
+    errors = {}
+
+    for name, spec in specs.items():
+        if name not in data:
+            if spec["required"] and not partial:
+                errors[name] = "is required"
+            continue
+
+        value = data[name]
+
+        if value is None or (isinstance(value, str) and not value.strip()):
+            if spec["required"]:
+                errors[name] = "is required"
+            else:
+                values[name] = spec["empty"]
+            continue
+
+        try:
+            values[name] = spec["validator"](value)
+        except ValueError as e:
+            errors[name] = str(e)
+
+    return values, errors
+
+
+def validation_error(errors):
+    return jsonify({
+        "error": "Invalid input",
+        "fields": errors
+    }), 400
+
+
+PROFILE_FIELDS = {
+    "full_name": field(text(100)),
+    "education_level": field(text(100)),
+    "college_name": field(text(200)),
+    "graduation_year": field(integer(1950, 2100)),
+    "preferred_roles": field(text_list(20, 100), empty=[])
+}
+
+GOAL_FIELDS = {
+    "target_role": field(text(100), required=True),
+    "target_company_type": field(text(100), required=True),
+    "target_date": field(iso_date, required=True)
+}
+
+APPLICATION_FIELDS = {
+    "company_name": field(text(200), required=True),
+    "role": field(text(200), required=True),
+    "company_type": field(text(100)),
+    "status": field(choice(ALLOWED_APPLICATION_STATUSES)),
+    "application_date": field(iso_date),
+    "job_url": field(http_url),
+    "location": field(text(200)),
+    "notes": field(text(5000)),
+    "interview_date": field(iso_date)
+}
+
+PROGRESS_FIELDS = {
+    "path_topic_id": field(integer(1, 2**63 - 1), required=True),
+    "status": field(choice(ALLOWED_PROGRESS_STATUSES), required=True),
+    "progress_percentage": field(integer(0, 100), required=True)
+}
+
+
+# ---------------------------------------------------------
 # Health check
 # ---------------------------------------------------------
 
@@ -312,44 +477,24 @@ def create_goal():
             "error": "Request body is required"
         }), 400
 
-    required_fields = [
-        "target_role",
-        "target_company_type",
-        "target_date"
-    ]
+    values, errors = validate_fields(data, GOAL_FIELDS)
 
-    missing_fields = [
-        field for field in required_fields
-        if not data.get(field)
-    ]
+    if errors:
+        return validation_error(errors)
 
-    if missing_fields:
-        return jsonify({
-            "error": "Missing required fields",
-            "fields": missing_fields
-        }), 400
+    columns = ["user_id", *values]
+    placeholders = ", ".join(["%s"] * len(columns))
 
     try:
         with psycopg.connect(DATABASE_URL) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    """
-                    INSERT INTO goals
-                    (
-                        user_id,
-                        target_role,
-                        target_company_type,
-                        target_date
-                    )
-                    VALUES (%s, %s, %s, %s)
+                    f"""
+                    INSERT INTO goals ({", ".join(columns)})
+                    VALUES ({placeholders})
                     RETURNING id;
                     """,
-                    (
-                        user.id,
-                        data["target_role"],
-                        data["target_company_type"],
-                        data["target_date"]
-                    )
+                    [user.id, *values.values()]
                 )
 
                 goal_id = cursor.fetchone()[0]
@@ -381,17 +526,10 @@ def update_goal(goal_id):
             "error": "Request body is required"
         }), 400
 
-    allowed_fields = [
-        "target_role",
-        "target_company_type",
-        "target_date"
-    ]
+    updates, errors = validate_fields(data, GOAL_FIELDS, partial=True)
 
-    updates = {
-        field: data[field]
-        for field in allowed_fields
-        if field in data
-    }
+    if errors:
+        return validation_error(errors)
 
     if not updates:
         return jsonify({
@@ -532,19 +670,10 @@ def update_profile():
             "error": "Request body is required"
         }), 400
 
-    allowed_fields = [
-        "full_name",
-        "education_level",
-        "college_name",
-        "graduation_year",
-        "preferred_roles"
-    ]
+    updates, errors = validate_fields(data, PROFILE_FIELDS, partial=True)
 
-    updates = {
-        field: data[field]
-        for field in allowed_fields
-        if field in data
-    }
+    if errors:
+        return validation_error(errors)
 
     if not updates:
         return jsonify({
@@ -682,38 +811,10 @@ def create_progress():
             "error": "Request body is required"
         }), 400
 
-    required_fields = [
-        "path_topic_id",
-        "status",
-        "progress_percentage"
-    ]
+    values, errors = validate_fields(data, PROGRESS_FIELDS)
 
-    missing_fields = [
-        field for field in required_fields
-        if field not in data
-    ]
-
-    if missing_fields:
-        return jsonify({
-            "error": "Missing required fields",
-            "fields": missing_fields
-        }), 400
-
-    progress_percentage = data["progress_percentage"]
-
-    if (
-        not isinstance(progress_percentage, (int, float))
-        or isinstance(progress_percentage, bool)
-        or not 0 <= progress_percentage <= 100
-    ):
-        return jsonify({
-            "error": "progress_percentage must be a number between 0 and 100"
-        }), 400
-
-    if data["status"] not in ALLOWED_PROGRESS_STATUSES:
-        return jsonify({
-            "error": "Invalid progress status"
-        }), 400
+    if errors:
+        return validation_error(errors)
 
     try:
         with psycopg.connect(DATABASE_URL) as connection:
@@ -732,9 +833,9 @@ def create_progress():
                     """,
                     (
                         user.id,
-                        data["path_topic_id"],
-                        data["status"],
-                        progress_percentage
+                        values["path_topic_id"],
+                        values["status"],
+                        values["progress_percentage"]
                     )
                 )
 
@@ -795,40 +896,24 @@ def update_progress(progress_id):
             "error": "Request body is required"
         }), 400
 
-    allowed_fields = [
-        "progress_percentage",
-        "status"
-    ]
-
-    updates = {
-        field: data[field]
-        for field in allowed_fields
-        if field in data
+    progress_update_fields = {
+        name: spec
+        for name, spec in PROGRESS_FIELDS.items()
+        if name != "path_topic_id"
     }
+
+    updates, errors = validate_fields(
+        data,
+        progress_update_fields,
+        partial=True
+    )
+
+    if errors:
+        return validation_error(errors)
 
     if not updates:
         return jsonify({
             "error": "No fields provided for update"
-        }), 400
-
-    if "progress_percentage" in updates:
-        progress_percentage = updates["progress_percentage"]
-
-        if (
-            not isinstance(progress_percentage, (int, float))
-            or isinstance(progress_percentage, bool)
-            or not 0 <= progress_percentage <= 100
-        ):
-            return jsonify({
-                "error": "progress_percentage must be a number between 0 and 100"
-            }), 400
-
-    if (
-        "status" in updates
-        and updates["status"] not in ALLOWED_PROGRESS_STATUSES
-    ):
-        return jsonify({
-            "error": "Invalid progress status"
         }), 400
 
     set_clause = ", ".join(
@@ -926,57 +1011,27 @@ def create_application():
             "error": "Request body is required"
         }), 400
 
-    if not data.get("company_name"):
-        return jsonify({
-            "error": "company_name is required"
-        }), 400
+    values, errors = validate_fields(data, APPLICATION_FIELDS)
 
-    if not data.get("role"):
-        return jsonify({
-            "error": "role is required"
-        }), 400
+    if errors:
+        return validation_error(errors)
 
-    if (
-        data.get("status")
-        and data["status"] not in ALLOWED_APPLICATION_STATUSES
-    ):
-        return jsonify({
-            "error": "Invalid application status"
-        }), 400
+    if not values.get("status"):
+        values["status"] = ALLOWED_APPLICATION_STATUSES[0]
+
+    columns = ["user_id", *values]
+    placeholders = ", ".join(["%s"] * len(columns))
 
     try:
         with psycopg.connect(DATABASE_URL) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    """
-                    INSERT INTO applications
-                    (
-                        user_id,
-                        company_name,
-                        role,
-                        company_type,
-                        status,
-                        application_date,
-                        job_url,
-                        location,
-                        notes,
-                        interview_date
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    f"""
+                    INSERT INTO applications ({", ".join(columns)})
+                    VALUES ({placeholders})
                     RETURNING id;
                     """,
-                    (
-                        user.id,
-                        data["company_name"],
-                        data["role"],
-                        data.get("company_type"),
-                        data.get("status", "saved"),
-                        data.get("application_date"),
-                        data.get("job_url"),
-                        data.get("location"),
-                        data.get("notes"),
-                        data.get("interview_date")
-                    )
+                    [user.id, *values.values()]
                 )
 
                 application_id = cursor.fetchone()[0]
@@ -1039,35 +1094,21 @@ def update_application(application_id):
             "error": "Request body is required"
         }), 400
 
-    allowed_fields = [
-        "company_name",
-        "role",
-        "company_type",
-        "status",
-        "application_date",
-        "job_url",
-        "location",
-        "notes",
-        "interview_date"
-    ]
+    updates, errors = validate_fields(
+        data,
+        APPLICATION_FIELDS,
+        partial=True
+    )
 
-    updates = {
-        field: data[field]
-        for field in allowed_fields
-        if field in data
-    }
+    if errors:
+        return validation_error(errors)
+
+    if "status" in updates and not updates["status"]:
+        return validation_error({"status": "is required"})
 
     if not updates:
         return jsonify({
             "error": "No fields provided for update"
-        }), 400
-
-    if (
-        "status" in updates
-        and updates["status"] not in ALLOWED_APPLICATION_STATUSES
-    ):
-        return jsonify({
-            "error": "Invalid application status"
         }), 400
 
     set_clause = ", ".join(
