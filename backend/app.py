@@ -23,20 +23,25 @@ class JSONProvider(DefaultJSONProvider):
         return DefaultJSONProvider.default(value)
 
 
+load_dotenv()
+
+
 app = Flask(__name__)
 app.json = JSONProvider(app)
 
 
-CORS(
-    app,
-    origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000"
-    ],
-    supports_credentials=True
-)
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
+]
 
-load_dotenv()
+# The API authenticates with bearer tokens, not cookies, so credentialed
+# CORS requests are not needed.
+CORS(app, origins=CORS_ORIGINS)
 
 
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -1516,4 +1521,6 @@ def dashboard():
 # ---------------------------------------------------------
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Never enable debug mode outside local development: the Werkzeug
+    # debugger allows arbitrary code execution.
+    app.run(debug=os.getenv("FLASK_DEBUG") == "1")
