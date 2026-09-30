@@ -27,6 +27,7 @@ PROTECTED_ENDPOINTS = [
     ("POST", "/applications"),
     ("PATCH", f"/applications/{uuid.uuid4()}"),
     ("DELETE", f"/applications/{uuid.uuid4()}"),
+    ("GET", "/dashboard"),
 ]
 
 

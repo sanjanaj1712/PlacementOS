@@ -197,6 +197,49 @@ def ensure_profile(cursor, user):
     )
 
 
+def fetch_path_summaries(cursor, user_id):
+    """Learning paths with the user's topic completion, in one query."""
+    cursor.execute(
+        """
+        SELECT
+            lp.id,
+            lp.title,
+            lp.description,
+            lp.position,
+            COUNT(pt.id) AS topic_count,
+            COUNT(utp.id) FILTER (
+                WHERE utp.status = 'completed'
+            ) AS completed_count,
+            COUNT(utp.id) FILTER (
+                WHERE utp.status = 'in_progress'
+            ) AS in_progress_count
+        FROM learning_paths lp
+        LEFT JOIN path_topics pt
+            ON pt.learning_path_id = lp.id
+        LEFT JOIN user_topic_progress utp
+            ON utp.path_topic_id = pt.id
+            AND utp.user_id = %s
+        GROUP BY lp.id
+        ORDER BY lp.position, lp.id;
+        """,
+        (user_id,)
+    )
+
+    paths = rows_to_dicts(cursor, cursor.fetchall())
+
+    for path in paths:
+        path["progress_percentage"] = percentage(
+            path["completed_count"],
+            path["topic_count"]
+        )
+
+    return paths
+
+
+def percentage(part, whole):
+    return round(part * 100 / whole) if whole else 0
+
+
 def rows_to_dicts(cursor, rows):
     """Convert database rows to dictionaries."""
     columns = [description[0] for description in cursor.description]
@@ -806,15 +849,7 @@ def learning_paths():
     try:
         with psycopg.connect(DATABASE_URL) as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT *
-                    FROM learning_paths
-                    ORDER BY id;
-                    """
-                )
-
-                paths = rows_to_dicts(cursor, cursor.fetchall())
+                paths = fetch_path_summaries(cursor, user.id)
 
         return jsonify(paths), 200
 
@@ -829,18 +864,35 @@ def get_path_topics(learning_path_id):
     if error_response:
         return error_response, status_code
 
+    if not (learning_path_id.isdigit() or is_valid_uuid(learning_path_id)):
+        return not_found("Learning path")
+
     try:
         with psycopg.connect(DATABASE_URL) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """
+                    SELECT 1
+                    FROM learning_paths
+                    WHERE id = %s;
+                    """,
+                    (learning_path_id,)
+                )
+
+                if cursor.fetchone() is None:
+                    return not_found("Learning path")
+
+                cursor.execute(
+                    """
                     SELECT
                         pt.id,
                         pt.learning_path_id,
+                        pt.parent_topic_id,
                         pt.title,
                         pt.description,
                         pt.resource_url,
                         pt.position,
+                        utp.id AS progress_id,
                         COALESCE(
                             utp.progress_percentage,
                             0
@@ -854,7 +906,7 @@ def get_path_topics(learning_path_id):
                         ON pt.id = utp.path_topic_id
                         AND utp.user_id = %s
                     WHERE pt.learning_path_id = %s
-                    ORDER BY pt.position;
+                    ORDER BY pt.position, pt.id;
                     """,
                     (user.id, learning_path_id)
                 )
@@ -1309,6 +1361,150 @@ def delete_application(application_id):
 
         return jsonify({
             "status": "application deleted"
+        }), 200
+
+    except Exception as e:
+        return server_error(e)
+
+
+# ---------------------------------------------------------
+# Dashboard
+# ---------------------------------------------------------
+
+@app.route("/dashboard", methods=["GET"])
+def dashboard():
+    """Everything the dashboard shows, in a fixed number of queries."""
+    user, error_response, status_code = require_user()
+
+    if error_response:
+        return error_response, status_code
+
+    try:
+        with psycopg.connect(DATABASE_URL) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT status, COUNT(*)
+                    FROM goals
+                    WHERE user_id = %s
+                    GROUP BY status;
+                    """,
+                    (user.id,)
+                )
+
+                goal_counts = dict(cursor.fetchall())
+
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM goals
+                    WHERE user_id = %s
+                    ORDER BY
+                        status IN ('achieved', 'abandoned'),
+                        target_date,
+                        created_at DESC
+                    LIMIT 1;
+                    """,
+                    (user.id,)
+                )
+
+                current_goal = rows_to_dicts(cursor, cursor.fetchall())
+
+                paths = fetch_path_summaries(cursor, user.id)
+
+                cursor.execute(
+                    """
+                    SELECT status, COUNT(*)
+                    FROM applications
+                    WHERE user_id = %s
+                    GROUP BY status;
+                    """,
+                    (user.id,)
+                )
+
+                application_counts = dict(cursor.fetchall())
+
+                cursor.execute(
+                    """
+                    SELECT *
+                    FROM (
+                        SELECT
+                            'goal' AS type,
+                            g.id::text AS id,
+                            g.target_role AS title,
+                            g.status,
+                            g.updated_at
+                        FROM goals g
+                        WHERE g.user_id = %(user_id)s
+
+                        UNION ALL
+
+                        SELECT
+                            'application',
+                            a.id::text,
+                            a.company_name || ' - ' || a.role,
+                            a.status,
+                            a.updated_at
+                        FROM applications a
+                        WHERE a.user_id = %(user_id)s
+
+                        UNION ALL
+
+                        SELECT
+                            'topic',
+                            utp.id::text,
+                            pt.title,
+                            utp.status,
+                            utp.updated_at
+                        FROM user_topic_progress utp
+                        JOIN path_topics pt
+                            ON pt.id = utp.path_topic_id
+                        WHERE utp.user_id = %(user_id)s
+                    ) activity
+                    ORDER BY updated_at DESC
+                    LIMIT 10;
+                    """,
+                    {"user_id": user.id}
+                )
+
+                recent_activity = rows_to_dicts(cursor, cursor.fetchall())
+
+        total_topics = sum(path["topic_count"] for path in paths)
+        completed_topics = sum(path["completed_count"] for path in paths)
+        in_progress_topics = sum(path["in_progress_count"] for path in paths)
+
+        return jsonify({
+            "goals": {
+                "total": sum(goal_counts.values()),
+                "by_status": {
+                    status: goal_counts.get(status, 0)
+                    for status in ALLOWED_GOAL_STATUSES
+                },
+                "current": current_goal[0] if current_goal else None
+            },
+            "topics": {
+                "total": total_topics,
+                "completed": completed_topics,
+                "in_progress": in_progress_topics,
+                "progress_percentage": percentage(
+                    completed_topics,
+                    total_topics
+                ),
+                "paths": paths
+            },
+            "applications": {
+                "total": sum(application_counts.values()),
+                "active": sum(
+                    count
+                    for status, count in application_counts.items()
+                    if status not in ("offer", "rejected")
+                ),
+                "by_status": {
+                    status: application_counts.get(status, 0)
+                    for status in ALLOWED_APPLICATION_STATUSES
+                }
+            },
+            "recent_activity": recent_activity
         }), 200
 
     except Exception as e:
