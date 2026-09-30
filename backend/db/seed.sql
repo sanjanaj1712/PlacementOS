@@ -1,11 +1,16 @@
 -- Learning path catalog. Safe to run more than once.
 
-insert into public.learning_paths (title, description, position) values
+insert into public.learning_paths (title, description, position)
+select t.title, t.description, t.position
+from (values
     ('Data Structures & Algorithms', 'Master the core topics required for technical interviews.', 1),
     ('Operating Systems', 'Core operating system concepts asked in technical interviews.', 2),
     ('Computer Networks', 'Networking fundamentals from the application layer down to the physical layer.', 3),
     ('DBMS', 'Database design, SQL, transactions and storage internals.', 4)
-on conflict (title) do nothing;
+) as t (title, description, position)
+where not exists (
+    select 1 from public.learning_paths lp where lp.title = t.title
+);
 
 insert into public.path_topics (learning_path_id, title, description, position)
 select lp.id, t.title, t.description, t.position
@@ -47,7 +52,12 @@ from (values
     ('DBMS', 'Query Processing & Optimization', 'Learn how databases execute queries and optimize query execution plans.', 8)
 ) as t (path_title, title, description, position)
 join public.learning_paths lp on lp.title = t.path_title
-on conflict do nothing;
+where not exists (
+    select 1 from public.path_topics pt
+    where pt.learning_path_id = lp.id
+      and pt.parent_topic_id is null
+      and pt.title = t.title
+);
 
 -- Subtopics
 insert into public.path_topics (learning_path_id, parent_topic_id, title, description, position)
@@ -66,4 +76,8 @@ join public.path_topics parent
 join public.learning_paths lp
     on lp.id = parent.learning_path_id
     and lp.title = 'Data Structures & Algorithms'
-on conflict do nothing;
+where not exists (
+    select 1 from public.path_topics pt
+    where pt.parent_topic_id = parent.id
+      and pt.title = t.title
+);
