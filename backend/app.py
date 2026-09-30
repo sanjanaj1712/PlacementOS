@@ -186,13 +186,18 @@ def rows_to_dicts(cursor, rows):
     return [dict(zip(columns, row)) for row in rows]
 
 
-ALLOWED_APPLICATION_STATUSES = [
-    "saved",
-    "applied",
-    "interview",
-    "offer",
-    "rejected"
-]
+# Application pipeline: Interested -> Applied -> OA -> Interview -> Offer,
+# with Rejected possible from any active stage. Offer and Rejected are final.
+APPLICATION_STATUS_TRANSITIONS = {
+    "interested": ["applied", "rejected"],
+    "applied": ["oa", "interview", "rejected"],
+    "oa": ["interview", "rejected"],
+    "interview": ["offer", "rejected"],
+    "offer": [],
+    "rejected": []
+}
+
+ALLOWED_APPLICATION_STATUSES = list(APPLICATION_STATUS_TRANSITIONS)
 
 ALLOWED_PROGRESS_STATUSES = [
     "not_started",
@@ -1123,6 +1128,41 @@ def update_application(application_id):
         with psycopg.connect(DATABASE_URL) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
+                    """
+                    SELECT status
+                    FROM applications
+                    WHERE id = %s
+                    AND user_id = %s
+                    FOR UPDATE;
+                    """,
+                    (application_id, user.id)
+                )
+
+                row = cursor.fetchone()
+
+                if row is None:
+                    return not_found("Application")
+
+                current_status = row[0]
+                new_status = updates.get("status", current_status)
+
+                if (
+                    new_status != current_status
+                    and new_status not in APPLICATION_STATUS_TRANSITIONS.get(
+                        current_status, []
+                    )
+                ):
+                    return jsonify({
+                        "error": (
+                            f"Cannot move application from "
+                            f"{current_status} to {new_status}"
+                        ),
+                        "allowed_statuses": APPLICATION_STATUS_TRANSITIONS.get(
+                            current_status, []
+                        )
+                    }), 409
+
+                cursor.execute(
                     f"""
                     UPDATE applications
                     SET
@@ -1134,13 +1174,7 @@ def update_application(application_id):
                     values
                 )
 
-                updated = cursor.rowcount
                 connection.commit()
-
-        if updated == 0:
-            return jsonify({
-                "error": "Application not found"
-            }), 404
 
         return jsonify({
             "status": "application updated"
