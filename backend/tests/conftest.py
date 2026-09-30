@@ -89,7 +89,7 @@ def make_token(user_id, email=None, **overrides):
     return jwt.encode(claims, TEST_JWT_SECRET, algorithm="HS256")
 
 
-class TestUser:
+class ApiUser:
     def __init__(self, client, user_id, email):
         self.client = client
         self.id = user_id
@@ -123,7 +123,7 @@ def make_user(client, db):
             "INSERT INTO auth.users (id, email) VALUES (%s, %s)",
             (user_id, email)
         )
-        return TestUser(client, user_id, email)
+        return ApiUser(client, user_id, email)
 
     return factory
 

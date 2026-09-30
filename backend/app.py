@@ -159,6 +159,11 @@ def server_error(error):
             "error": "Invalid input"
         }), 400
 
+    if isinstance(error, psycopg.errors.ForeignKeyViolation):
+        return jsonify({
+            "error": "A referenced record does not exist"
+        }), 409
+
     app.logger.exception("Unhandled error: %s", error)
 
     return jsonify({
@@ -180,6 +185,18 @@ def not_found(resource):
     }), 404
 
 
+def ensure_profile(cursor, user):
+    """Create the user's profile row if the signup trigger did not."""
+    cursor.execute(
+        """
+        INSERT INTO users (id, email)
+        VALUES (%s, %s)
+        ON CONFLICT (id) DO NOTHING;
+        """,
+        (user.id, user.email)
+    )
+
+
 def rows_to_dicts(cursor, rows):
     """Convert database rows to dictionaries."""
     columns = [description[0] for description in cursor.description]
@@ -198,6 +215,13 @@ APPLICATION_STATUS_TRANSITIONS = {
 }
 
 ALLOWED_APPLICATION_STATUSES = list(APPLICATION_STATUS_TRANSITIONS)
+
+ALLOWED_GOAL_STATUSES = [
+    "not_started",
+    "in_progress",
+    "achieved",
+    "abandoned"
+]
 
 ALLOWED_PROGRESS_STATUSES = [
     "not_started",
@@ -386,7 +410,10 @@ PROFILE_FIELDS = {
 GOAL_FIELDS = {
     "target_role": field(text(100), required=True),
     "target_company_type": field(text(100), required=True),
-    "target_date": field(iso_date, required=True)
+    "target_date": field(iso_date, required=True),
+    "target_companies": field(text_list(30, 100), empty=[]),
+    "status": field(choice(ALLOWED_GOAL_STATUSES), empty="not_started"),
+    "progress_percentage": field(integer(0, 100), empty=0)
 }
 
 APPLICATION_FIELDS = {
@@ -670,6 +697,8 @@ def profile():
     try:
         with psycopg.connect(DATABASE_URL) as connection:
             with connection.cursor() as cursor:
+                ensure_profile(cursor, user)
+
                 cursor.execute(
                     """
                     SELECT *
@@ -734,6 +763,8 @@ def update_profile():
     try:
         with psycopg.connect(DATABASE_URL) as connection:
             with connection.cursor() as cursor:
+                ensure_profile(cursor, user)
+
                 cursor.execute(
                     f"""
                     UPDATE users
