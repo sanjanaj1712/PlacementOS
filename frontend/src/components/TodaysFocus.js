@@ -20,7 +20,7 @@ export default function TodaysFocus() {
   return (
     <div className="mt-6 rounded-2xl bg-white p-6 shadow-sm">
       <h2 className="text-lg font-semibold text-gray-900">
-        Today's Focus
+        Today&apos;s Focus
       </h2>
 
       <div className="mt-4 space-y-3">
